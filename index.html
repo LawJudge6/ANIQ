@@ -96,11 +96,12 @@
     </div>
 
     <div id="screen-main" class="game-layout hidden">
-        <div class="panel col-left">
-            <h3>Joueurs</h3>
-            <div id="player-list"></div>
-            <button id="btn-invite" onclick="copyInviteLink()" style="background: #2980b9; font-size: 0.8em; margin-top: auto;">Copier Lien d'invitation</button>
-        </div>
+		<div class="panel col-left">
+			<h3>Joueurs</h3>
+			<div id="player-list"></div>
+			<button id="btn-leave" onclick="leaveRoom()" style="background: #c0392b; font-size: 0.8em; margin-top: auto; margin-bottom: 5px;">Quitter la salle</button>
+			<button id="btn-invite" onclick="copyInviteLink()" style="background: #2980b9; font-size: 0.8em;">Copier Lien d'invitation</button>
+		</div>
 
         <div class="panel col-center">
             <div id="lobby-content">
@@ -325,35 +326,47 @@
             if(roomId) joinRoom(roomId, username); else createRoom(username);
         }
 
-        function createRoom(username) {
-            isHost = true;
-            const newRoomId = 'aq-' + Math.random().toString(36).substr(2, 6);
-            peer = new Peer(newRoomId);
-            peer.on('open', (id) => {
-                window.history.pushState({}, '', '?room=' + id);
-                players.push({ id: id, name: username, isHost: true });
-                updatePlayerList();
-                goToLobby();
-            });
-            peer.on('connection', (conn) => {
-                connections.push(conn);
-                conn.on('data', (data) => {
-                    if(data.type === 'JOIN') {
-                        players.push({ id: conn.peer, name: data.name });
-                        updatePlayerList();
-                        broadcast({ type: 'PLAYER_LIST', players: players });
-                    }
-                    if(data.type === 'CHAT') {
-                        displayChatMessage(data.name, data.message);
-                        broadcast(data);
-                    }
-                    if(data.type === 'READY_ROUND') {
-                        readyPlayers.add(conn.peer);
-                        checkAllPlayersReady();
-                    }
-                });
-            });
-        }
+		function createRoom(username) {
+			isHost = true;
+			const newRoomId = 'aq-' + Math.random().toString(36).substr(2, 6);
+			peer = new Peer(newRoomId);
+
+			peer.on('open', (id) => {
+				window.history.pushState({}, '', '?room=' + id);
+				players.push({ id: id, name: username, isHost: true });
+				updatePlayerList();
+				goToLobby();
+			});
+
+			peer.on('connection', (conn) => {
+				connections.push(conn);
+				
+				conn.on('data', (data) => {
+					if (data.type === 'JOIN') {
+						players.push({ id: conn.peer, name: data.name });
+						updatePlayerList();
+						broadcast({ type: 'PLAYER_LIST', players: players });
+					}
+					
+					if (data.type === 'CHAT') {
+						// 1. L'hôte affiche le message localement
+						displayChatMessage(data.name, data.message);
+						
+						// 2. L'hôte renvoie le message à tout le monde SAUF à l'expéditeur
+						connections.forEach(c => {
+							if (c.peer !== conn.peer) {
+								c.send(data);
+							}
+						});
+					}
+					
+					if (data.type === 'READY_ROUND') {
+						readyPlayers.add(conn.peer);
+						checkAllPlayersReady();
+					}
+				});
+			});
+		}
 
         function joinRoom(id, username) {
             isHost = false;
@@ -673,6 +686,40 @@
             clearSongInfo();
             document.getElementById('host-controls').classList.add('hidden');
         }
+		function leaveRoom() {
+				if (!confirm("Voulez-vous vraiment quitter la salle ?")) return;
+
+				// 1. Fermer les connexions
+				if (peer) {
+					peer.destroy();
+				}
+
+				// 2. Réinitialiser les variables locales
+				peer = null;
+				isHost = false;
+				connections = [];
+				connToHost = null;
+				players = [];
+				readyPlayers.clear();
+				currentRound = 0;
+
+				// 3. Nettoyer l'URL (enlever le paramètre room)
+				const url = new URL(window.location.href);
+				url.searchParams.delete('room');
+				window.history.pushState({}, '', url.pathname);
+
+				// 4. Interface : Retour à l'accueil
+				document.getElementById('screen-main').classList.add('hidden');
+				document.getElementById('screen-home').classList.remove('hidden');
+				document.getElementById('game-content').classList.add('hidden');
+				document.getElementById('lobby-content').classList.remove('hidden');
+				
+				// Optionnel : remettre le texte du bouton d'accueil par défaut
+				document.getElementById('btn-lobby').innerText = "CRÉER UNE SALLE";
+				
+				// Nettoyer le chat
+				document.getElementById('chat-messages').innerHTML = "";
+			}
     </script>
 </body>
 </html>
