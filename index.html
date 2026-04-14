@@ -54,8 +54,6 @@
         .info-content { font-size: 0.95em; color: var(--text); }
         
         .game-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
-
-        /* Style pour les joueurs connectés */
         .player-entry { background: rgba(0,0,0,0.2); padding: 8px; border-radius: 4px; margin-bottom: 5px; display: flex; align-items: center; gap: 10px;}
     </style>
 </head>
@@ -84,8 +82,7 @@
     <div id="screen-main" class="game-layout hidden">
         <div class="panel col-left">
             <h3>Joueurs</h3>
-            <div id="player-list">
-                </div>
+            <div id="player-list"></div>
             <button id="btn-invite" onclick="copyInviteLink()" style="background: #2980b9; font-size: 0.8em; margin-top: auto;">Copier Lien d'invitation</button>
         </div>
 
@@ -209,9 +206,9 @@
         // MULTIPLAYER VARIABLES
         let peer = null;
         let isHost = false;
-        let connections = []; // Pour l'hôte
-        let connToHost = null; // Pour l'invité
-        let players = []; // Liste des joueurs {id, name}
+        let connections = [];
+        let connToHost = null;
+        let players = [];
 
         window.onload = function() {
             const savedList = localStorage.getItem('aq_list');
@@ -221,7 +218,6 @@
                 updateHomeUI(savedUser);
             }
             
-            // Check si on rejoint une salle via l'URL
             const urlParams = new URLSearchParams(window.location.search);
             const roomId = urlParams.get('room');
             if(roomId) {
@@ -233,11 +229,12 @@
             slider.oninput = () => { player.volume = slider.value; };
         };
 
-        function updateHomeUI(user) {
+        function updateHomeUI(anilistUser) {
             document.getElementById('sync-container').classList.add('hidden');
             document.getElementById('local-data-container').classList.remove('hidden');
-            document.getElementById('local-msg').innerText = `Liste de ${user} chargée (${userAnimeList.length} animés)`;
-            document.getElementById('username-input').value = user;
+            // Modification 3 : Affiche le pseudo du joueur s'il est renseigné
+            const playerName = document.getElementById('username-input').value.trim() || anilistUser;
+            document.getElementById('local-msg').innerText = `Liste de ${anilistUser} chargée (${userAnimeList.length} animés)`;
             document.getElementById('btn-lobby').classList.remove('hidden');
         }
 
@@ -254,7 +251,7 @@
 
         function copyInviteLink() {
             const url = window.location.href;
-            navigator.clipboard.writeText(url).then(() => alert("Lien copié ! Partagez-le à vos amis."));
+            navigator.clipboard.writeText(url).then(() => alert("Lien copié !"));
         }
 
         async function syncAniList(isResync = false) {
@@ -290,8 +287,6 @@
             } catch (err) { alert("Erreur lors de la synchro"); }
         }
 
-        // --- MULTIPLAYER LOGIC ---
-
         function initMultiplayer() {
             const username = document.getElementById('username-input').value.trim();
             if(!username) return alert("Choisis un pseudo d'abord !");
@@ -324,7 +319,6 @@
                     if(data.type === 'JOIN') {
                         players.push({ id: conn.peer, name: data.name });
                         updatePlayerList();
-                        // Envoyer la liste des joueurs mise à jour à tout le monde
                         broadcast({ type: 'PLAYER_LIST', players: players });
                     }
                 });
@@ -355,6 +349,10 @@
                     if(data.type === 'REVEAL') {
                         reveal();
                     }
+                    // Modification 1 : Retour au lobby pour les invités
+                    if(data.type === 'GAME_OVER') {
+                        resetToLobby();
+                    }
                 });
             });
         }
@@ -372,8 +370,6 @@
             connections.forEach(c => c.send(data));
         }
 
-        // --- GAME LOGIC ---
-
         function goToLobby() {
             document.getElementById('screen-home').classList.add('hidden');
             document.getElementById('screen-main').classList.remove('hidden');
@@ -382,19 +378,18 @@
         function launchGame() {
             totalRounds = parseInt(document.getElementById('nb-songs').value);
             currentRound = 0;
-            // On ne cache pas le lobby ici directement, nextRound s'en occupe
             nextRound();
         }
 
         async function nextRound() {
             if (currentRound >= totalRounds) {
-                alert("Partie Terminée !");
+                // Modification 1 : Retour aux paramètres pour tout le monde
+                broadcast({ type: 'GAME_OVER' });
                 resetToLobby();
                 return;
             }
             currentRound++;
             
-            // Hôte décide du prochain animé
             const allowedFormats = Array.from(document.querySelectorAll('#anime-types input:checked')).map(i => i.value);
             let filtered = userAnimeList.filter(a => allowedFormats.includes(a.format) || allowedFormats.length === 0);
             if(filtered.length === 0) return alert("Aucun animé trouvé");
@@ -413,7 +408,23 @@
                 const theme = themes[Math.floor(Math.random() * themes.length)];
                 const videoUrl = theme.animethemeentries[0].videos[0].link;
 
-                // Sync avec les autres
+                // Modification 2 : Génération des choix par l'hôte pour tout le monde
+                let roundChoices = [];
+                const mode = document.getElementById('game-mode-select').value;
+                if(mode === 'multi') {
+                    const count = parseInt(document.getElementById('multi-choice-count').value);
+                    const correctTitle = currentAnime.titleEnglish || currentAnime.titleRomaji;
+                    roundChoices = [correctTitle];
+                    let listCopy = [...userAnimeList].filter(a => (a.titleEnglish !== correctTitle && a.titleRomaji !== correctTitle));
+                    for(let i=0; i < count-1; i++) {
+                        if(listCopy.length === 0) break;
+                        const idx = Math.floor(Math.random() * listCopy.length);
+                        roundChoices.push(listCopy[idx].titleEnglish || listCopy[idx].titleRomaji);
+                        listCopy.splice(idx, 1);
+                    }
+                    roundChoices.sort(() => Math.random() - 0.5);
+                }
+
                 const roundData = {
                     type: 'START_ROUND',
                     videoUrl: videoUrl,
@@ -421,13 +432,13 @@
                     theme: theme,
                     round: currentRound,
                     total: totalRounds,
+                    choices: roundChoices, // On transmet les choix générés
                     settings: {
                         blur: document.getElementById('setting-blur').checked,
                         sample: document.getElementById('setting-sample').value,
                         speed: document.getElementById('setting-speed').value,
                         duration: document.getElementById('duration').value,
-                        mode: document.getElementById('game-mode-select').value,
-                        multiCount: document.getElementById('multi-choice-count').value
+                        mode: mode
                     }
                 };
 
@@ -449,7 +460,6 @@
             clearInterval(timerInterval);
             resetUI();
 
-            // Appliquer les settings reçus
             const player = document.getElementById('main-player');
             player.src = data.videoUrl;
             player.load();
@@ -473,14 +483,14 @@
                 setTimeout(() => { 
                     player.play();
                     startTimer(parseInt(data.settings.duration));
-                    
-                    // Remplir les infos (cachées)
                     updateInfoBox(data.theme);
 
-                    // Setup input
                     const zone = document.getElementById('answer-zone');
                     if(data.settings.mode === 'multi') {
-                        setupMultiChoice(currentAnime.titleEnglish || currentAnime.titleRomaji, data.settings.multiCount);
+                        // Modification 2 : Utilisation des choix synchronisés
+                        zone.innerHTML = `<div class="multi-grid">` + 
+                            data.choices.map(c => `<button class="btn-choice" onclick="selectChoice(this)">${c}</button>`).join('') + 
+                            `</div>`;
                     } else {
                         zone.innerHTML = `<div class="search-container"><input type="text" id="answer-input" placeholder="Tapez le titre..." oninput="fetchSuggestions(this.value)" autofocus autocomplete="off"><div id="suggestions-box" class="hidden"></div></div>`;
                     }
@@ -498,23 +508,6 @@
             document.getElementById('res-year').innerText = `${currentAnime.season || ''} ${currentAnime.year || ''}`;
             document.getElementById('res-score').innerText = currentAnime.score ? `${currentAnime.score}/100` : "N/A";
             document.getElementById('res-genres').innerText = currentAnime.genres;
-        }
-
-        function setupMultiChoice(correctTitle, count) {
-            const zone = document.getElementById('answer-zone');
-            let choices = [correctTitle];
-            let listCopy = [...userAnimeList].filter(a => (a.titleEnglish !== correctTitle && a.titleRomaji !== correctTitle));
-            
-            for(let i=0; i < count-1; i++) {
-                if(listCopy.length === 0) break;
-                const idx = Math.floor(Math.random() * listCopy.length);
-                choices.push(listCopy[idx].titleEnglish || listCopy[idx].titleRomaji);
-                listCopy.splice(idx, 1);
-            }
-            choices.sort(() => Math.random() - 0.5);
-            zone.innerHTML = `<div class="multi-grid">` + 
-                choices.map(c => `<button class="btn-choice" onclick="selectChoice(this)">${c}</button>`).join('') + 
-                `</div>`;
         }
 
         function selectChoice(btn) {
@@ -596,14 +589,15 @@
         }
 
         function resetToLobby() {
+            // Modification 1 : Réinitialisation sans reload
+            clearInterval(timerInterval);
             const player = document.getElementById('main-player');
-            player.pause(); player.src = "";
+            player.pause(); 
+            player.src = "";
             document.getElementById('game-content').classList.add('hidden');
             document.getElementById('lobby-content').classList.remove('hidden');
             clearSongInfo();
-            // On retire le ?room= de l'URL pour pouvoir relancer proprement si besoin
-            window.history.pushState({}, '', window.location.pathname);
-            location.reload(); 
+            currentRound = 0;
         }
 
         function clearSongInfo() {
