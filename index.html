@@ -2,7 +2,8 @@
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
-    <title>Anime Quiz - AniList Edition</title>
+    <title>Anime Quiz - AniList Edition (Multiplayer)</title>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
     <style>
         :root { --bg: #2c3e50; --panel: #34495e; --accent: #27ae60; --text: #ecf0f1; --border: #5d6d7e; --highlight: #f1c40f; --anilist: #3db4f2; }
         body { font-family: 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); margin: 0; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
@@ -23,10 +24,7 @@
         #video-area { width: 100%; aspect-ratio: 16/9; background: #000; border-radius: 8px; position: relative; overflow: hidden; margin-bottom: 5px; border: 2px solid #1a252f; }
         #main-player { width: 100%; height: 100%; object-fit: contain; transition: filter 0.3s ease; }
         
-        /* EFFET BLUR */
         .blur-video { filter: blur(40px) brightness(0.8); }
-
-        /* L'overlay est noir par défaut, mais devient transparent si le flou est activé */
         #video-overlay { position: absolute; top:0; left:0; width:100%; height:100%; background: black; display: flex; align-items: center; justify-content: center; z-index: 10; color: white; font-weight: bold; text-align: center; padding: 20px; transition: background 0.3s; }
         #video-overlay.transparent { background: transparent; }
         
@@ -56,6 +54,9 @@
         .info-content { font-size: 0.95em; color: var(--text); }
         
         .game-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+
+        /* Style pour les joueurs connectés */
+        .player-entry { background: rgba(0,0,0,0.2); padding: 8px; border-radius: 4px; margin-bottom: 5px; display: flex; align-items: center; gap: 10px;}
     </style>
 </head>
 <body>
@@ -77,77 +78,81 @@
                 <button onclick="clearLocalStorage()" style="background: #c0392b; font-size: 0.7em; padding: 5px 10px;">Changer de compte</button>
             </div>
         </div>
-        <button id="btn-lobby" onclick="goToLobby()" style="width: 100%; padding: 15px; font-size: 1.1em;" class="hidden">CRÉER UNE SALLE</button>
+        <button id="btn-lobby" onclick="initMultiplayer()" style="width: 100%; padding: 15px; font-size: 1.1em;" class="hidden">CRÉER UNE SALLE</button>
     </div>
 
     <div id="screen-main" class="game-layout hidden">
         <div class="panel col-left">
             <h3>Joueurs</h3>
             <div id="player-list">
-                <div style="background: rgba(0,0,0,0.2); padding: 8px; border-radius: 4px;">👑 <span id="display-name">...</span></div>
-            </div>
-            <button onclick="copyInviteLink()" style="background: #2980b9; font-size: 0.8em; margin-top: auto;">Inviter</button>
+                </div>
+            <button id="btn-invite" onclick="copyInviteLink()" style="background: #2980b9; font-size: 0.8em; margin-top: auto;">Copier Lien d'invitation</button>
         </div>
 
         <div class="panel col-center">
             <div id="lobby-content">
-                <h2>Paramètres</h2>
+                <h2 id="lobby-title">Paramètres de la salle</h2>
                 
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
-                    <div>Musiques: <input type="number" id="nb-songs" value="10" min="1"></div>
-                    <div>Temps (sec): <input type="number" id="duration" value="20" min="5"></div>
-                    <div>Mode: 
-                        <select id="game-mode-select" onchange="toggleMultiOptions()">
-                            <option value="typing">Typing</option>
-                            <option value="multi">Choix Multiple</option>
-                        </select>
+                <div id="host-settings">
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                        <div>Musiques: <input type="number" id="nb-songs" value="10" min="1"></div>
+                        <div>Temps (sec): <input type="number" id="duration" value="20" min="5"></div>
+                        <div>Mode: 
+                            <select id="game-mode-select" onchange="toggleMultiOptions()">
+                                <option value="typing">Typing</option>
+                                <option value="multi">Choix Multiple</option>
+                            </select>
+                        </div>
+                        <div id="multi-choice-count-box" class="hidden">Nb Choix: 
+                            <select id="multi-choice-count">
+                                <option value="2">2</option>
+                                <option value="4" selected>4</option>
+                                <option value="8">8</option>
+                            </select>
+                        </div>
                     </div>
-                    <div id="multi-choice-count-box" class="hidden">Nb Choix: 
-                        <select id="multi-choice-count">
-                            <option value="2">2</option>
-                            <option value="4" selected>4</option>
-                            <option value="8">8</option>
-                        </select>
-                    </div>
-                </div>
 
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; background: rgba(0,0,0,0.1); padding: 10px; border-radius: 8px; margin-top: 10px;">
-                    <div class="check-item"><input type="checkbox" id="setting-blur"> 💧 Blur Vidéo</div>
-                    <div>Sample Point: 
-                        <select id="setting-sample">
-                            <option value="start">Début (0s)</option>
-                            <option value="random">Aléatoire (0-60s)</option>
-                        </select>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; background: rgba(0,0,0,0.1); padding: 10px; border-radius: 8px; margin-top: 10px;">
+                        <div class="check-item"><input type="checkbox" id="setting-blur"> 💧 Blur Vidéo</div>
+                        <div>Sample Point: 
+                            <select id="setting-sample">
+                                <option value="start">Début (0s)</option>
+                                <option value="random">Aléatoire (0-60s)</option>
+                            </select>
+                        </div>
+                        <div>Playback Speed: 
+                            <select id="setting-speed">
+                                <option value="0.5">0.5x</option>
+                                <option value="0.75">0.75x</option>
+                                <option value="1" selected>1x Normal</option>
+                                <option value="1.5">1.5x</option>
+                                <option value="2">2x</option>
+                                <option value="3">3x</option>
+                                <option value="4">4x</option>
+                            </select>
+                        </div>
                     </div>
-                    <div>Playback Speed: 
-                        <select id="setting-speed">
-                            <option value="0.5">0.5x</option>
-                            <option value="0.75">0.75x</option>
-                            <option value="1" selected>1x Normal</option>
-                            <option value="1.5">1.5x</option>
-                            <option value="2">2x</option>
-                            <option value="3">3x</option>
-                            <option value="4">4x</option>
-                        </select>
-                    </div>
-                </div>
 
-                <div class="settings-grid">
-                    <div id="song-types">
-                        <strong>Song Types</strong>
-                        <div class="check-item"><input type="checkbox" value="OP" checked> Openings</div>
-                        <div class="check-item"><input type="checkbox" value="ED" checked> Endings</div>
-                        <div class="check-item"><input type="checkbox" value="IN"> Inserts</div>
+                    <div class="settings-grid">
+                        <div id="song-types">
+                            <strong>Song Types</strong>
+                            <div class="check-item"><input type="checkbox" value="OP" checked> Openings</div>
+                            <div class="check-item"><input type="checkbox" value="ED" checked> Endings</div>
+                            <div class="check-item"><input type="checkbox" value="IN"> Inserts</div>
+                        </div>
+                        <div id="anime-types">
+                            <strong>Anime Types</strong>
+                            <div class="check-item"><input type="checkbox" class="type-filter" value="TV" checked> TV</div>
+                            <div class="check-item"><input type="checkbox" class="type-filter" value="MOVIE" checked> Movie</div>
+                            <div class="check-item"><input type="checkbox" class="type-filter" value="OVA"> OVA</div>
+                            <div class="check-item"><input type="checkbox" class="type-filter" value="ONA"> ONA</div>
+                        </div>
                     </div>
-                    <div id="anime-types">
-                        <strong>Anime Types</strong>
-                        <div class="check-item"><input type="checkbox" class="type-filter" value="TV" checked> TV</div>
-                        <div class="check-item"><input type="checkbox" class="type-filter" value="MOVIE" checked> Movie</div>
-                        <div class="check-item"><input type="checkbox" class="type-filter" value="OVA"> OVA</div>
-                        <div class="check-item"><input type="checkbox" class="type-filter" value="ONA"> ONA</div>
-                    </div>
+                    <button id="btn-start-game" onclick="launchGame()" style="width: 100%; font-size: 1.5em; padding: 20px;">LANCER !</button>
                 </div>
-                <button onclick="launchGame()" style="width: 100%; font-size: 1.5em; padding: 20px;">LANCER !</button>
+                <div id="guest-waiting-msg" class="hidden">
+                    <p>En attente que l'hôte lance la partie...</p>
+                </div>
             </div>
 
             <div id="game-content" class="hidden">
@@ -201,6 +206,13 @@
         let totalRounds = 0;
         let currentAnime = null;
 
+        // MULTIPLAYER VARIABLES
+        let peer = null;
+        let isHost = false;
+        let connections = []; // Pour l'hôte
+        let connToHost = null; // Pour l'invité
+        let players = []; // Liste des joueurs {id, name}
+
         window.onload = function() {
             const savedList = localStorage.getItem('aq_list');
             const savedUser = localStorage.getItem('aq_username');
@@ -208,6 +220,14 @@
                 userAnimeList = JSON.parse(savedList);
                 updateHomeUI(savedUser);
             }
+            
+            // Check si on rejoint une salle via l'URL
+            const urlParams = new URLSearchParams(window.location.search);
+            const roomId = urlParams.get('room');
+            if(roomId) {
+                document.getElementById('btn-lobby').innerText = "REJOINDRE LA SALLE";
+            }
+
             const slider = document.getElementById('volume-slider');
             const player = document.getElementById('main-player');
             slider.oninput = () => { player.volume = slider.value; };
@@ -234,7 +254,7 @@
 
         function copyInviteLink() {
             const url = window.location.href;
-            navigator.clipboard.writeText(url).then(() => alert("Lien copié !"));
+            navigator.clipboard.writeText(url).then(() => alert("Lien copié ! Partagez-le à vos amis."));
         }
 
         async function syncAniList(isResync = false) {
@@ -270,10 +290,91 @@
             } catch (err) { alert("Erreur lors de la synchro"); }
         }
 
+        // --- MULTIPLAYER LOGIC ---
+
+        function initMultiplayer() {
+            const username = document.getElementById('username-input').value.trim();
+            if(!username) return alert("Choisis un pseudo d'abord !");
+
+            const urlParams = new URLSearchParams(window.location.search);
+            const roomId = urlParams.get('room');
+
+            if(roomId) {
+                joinRoom(roomId, username);
+            } else {
+                createRoom(username);
+            }
+        }
+
+        function createRoom(username) {
+            isHost = true;
+            const newRoomId = 'aq-' + Math.random().toString(36).substr(2, 6);
+            peer = new Peer(newRoomId);
+
+            peer.on('open', (id) => {
+                window.history.pushState({}, '', '?room=' + id);
+                players.push({ id: id, name: username, isHost: true });
+                updatePlayerList();
+                goToLobby();
+            });
+
+            peer.on('connection', (conn) => {
+                connections.push(conn);
+                conn.on('data', (data) => {
+                    if(data.type === 'JOIN') {
+                        players.push({ id: conn.peer, name: data.name });
+                        updatePlayerList();
+                        // Envoyer la liste des joueurs mise à jour à tout le monde
+                        broadcast({ type: 'PLAYER_LIST', players: players });
+                    }
+                });
+            });
+        }
+
+        function joinRoom(id, username) {
+            isHost = false;
+            peer = new Peer();
+
+            peer.on('open', (myId) => {
+                connToHost = peer.connect(id);
+                connToHost.on('open', () => {
+                    connToHost.send({ type: 'JOIN', name: username });
+                    goToLobby();
+                    document.getElementById('host-settings').classList.add('hidden');
+                    document.getElementById('guest-waiting-msg').classList.remove('hidden');
+                });
+
+                connToHost.on('data', (data) => {
+                    if(data.type === 'PLAYER_LIST') {
+                        players = data.players;
+                        updatePlayerList();
+                    }
+                    if(data.type === 'START_ROUND') {
+                        receiveStartRound(data);
+                    }
+                    if(data.type === 'REVEAL') {
+                        reveal();
+                    }
+                });
+            });
+        }
+
+        function updatePlayerList() {
+            const listDiv = document.getElementById('player-list');
+            listDiv.innerHTML = players.map(p => `
+                <div class="player-entry">
+                    ${p.isHost ? '👑' : '👤'} ${p.name}
+                </div>
+            `).join('');
+        }
+
+        function broadcast(data) {
+            connections.forEach(c => c.send(data));
+        }
+
+        // --- GAME LOGIC ---
+
         function goToLobby() {
-            const u = document.getElementById('username-input').value;
-            if(!u || userAnimeList.length === 0) return alert("Liste vide !");
-            document.getElementById('display-name').innerText = u;
             document.getElementById('screen-home').classList.add('hidden');
             document.getElementById('screen-main').classList.remove('hidden');
         }
@@ -281,8 +382,7 @@
         function launchGame() {
             totalRounds = parseInt(document.getElementById('nb-songs').value);
             currentRound = 0;
-            document.getElementById('lobby-content').classList.add('hidden');
-            document.getElementById('game-content').classList.remove('hidden');
+            // On ne cache pas le lobby ici directement, nextRound s'en occupe
             nextRound();
         }
 
@@ -293,13 +393,11 @@
                 return;
             }
             currentRound++;
-            document.getElementById('round-info').innerText = `Round ${currentRound} / ${totalRounds}`;
-            clearInterval(timerInterval);
-            resetUI();
-
+            
+            // Hôte décide du prochain animé
             const allowedFormats = Array.from(document.querySelectorAll('#anime-types input:checked')).map(i => i.value);
             let filtered = userAnimeList.filter(a => allowedFormats.includes(a.format) || allowedFormats.length === 0);
-            if(filtered.length === 0) return alert("Aucun animé trouvé avec ces critères");
+            if(filtered.length === 0) return alert("Aucun animé trouvé");
             
             currentAnime = filtered[Math.floor(Math.random() * filtered.length)];
             
@@ -309,30 +407,59 @@
                 
                 const allowedSongTypes = Array.from(document.querySelectorAll('#song-types input:checked')).map(i => i.value);
                 let themes = json.anime[0].animethemes;
-                if(allowedSongTypes.length > 0) {
-                    themes = themes.filter(t => allowedSongTypes.includes(t.type));
-                }
-
+                if(allowedSongTypes.length > 0) themes = themes.filter(t => allowedSongTypes.includes(t.type));
                 if(themes.length === 0) { nextRound(); return; }
 
                 const theme = themes[Math.floor(Math.random() * themes.length)];
-                prepareRound(theme.animethemeentries[0].videos[0].link, json.anime[0].name, theme);
+                const videoUrl = theme.animethemeentries[0].videos[0].link;
+
+                // Sync avec les autres
+                const roundData = {
+                    type: 'START_ROUND',
+                    videoUrl: videoUrl,
+                    currentAnime: currentAnime,
+                    theme: theme,
+                    round: currentRound,
+                    total: totalRounds,
+                    settings: {
+                        blur: document.getElementById('setting-blur').checked,
+                        sample: document.getElementById('setting-sample').value,
+                        speed: document.getElementById('setting-speed').value,
+                        duration: document.getElementById('duration').value,
+                        mode: document.getElementById('game-mode-select').value,
+                        multiCount: document.getElementById('multi-choice-count').value
+                    }
+                };
+
+                broadcast(roundData);
+                receiveStartRound(roundData);
+
             } catch (e) { nextRound(); }
         }
 
-        function prepareRound(url, name, theme) {
-            const player = document.getElementById('main-player');
-            const overlay = document.getElementById('video-overlay');
-            overlay.innerText = "Buffering...";
-            player.src = url;
-            player.load();
+        function receiveStartRound(data) {
+            currentRound = data.round;
+            totalRounds = data.total;
+            currentAnime = data.currentAnime;
             
+            document.getElementById('lobby-content').classList.add('hidden');
+            document.getElementById('game-content').classList.remove('hidden');
+            document.getElementById('round-info').innerText = `Round ${currentRound} / ${totalRounds}`;
+            
+            clearInterval(timerInterval);
+            resetUI();
+
+            // Appliquer les settings reçus
+            const player = document.getElementById('main-player');
+            player.src = data.videoUrl;
+            player.load();
+
             player.oncanplaythrough = () => {
                 player.oncanplaythrough = null;
-                overlay.innerText = ""; // On vide le texte
+                const overlay = document.getElementById('video-overlay');
+                overlay.innerText = "";
 
-                // Blur
-                if(document.getElementById('setting-blur').checked) {
+                if(data.settings.blur) {
                     player.classList.add('blur-video');
                     overlay.classList.add('transparent');
                 } else {
@@ -340,24 +467,28 @@
                     overlay.classList.remove('transparent');
                 }
 
-                // Sample Point
-                if(document.getElementById('setting-sample').value === 'random') {
-                    player.currentTime = Math.floor(Math.random() * 60);
-                } else {
-                    player.currentTime = 0;
-                }
+                player.currentTime = (data.settings.sample === 'random') ? Math.floor(Math.random() * 60) : 0;
+                player.playbackRate = parseFloat(data.settings.speed);
 
-                // Speed
-                player.playbackRate = parseFloat(document.getElementById('setting-speed').value);
+                setTimeout(() => { 
+                    player.play();
+                    startTimer(parseInt(data.settings.duration));
+                    
+                    // Remplir les infos (cachées)
+                    updateInfoBox(data.theme);
 
-                setTimeout(() => { startPlayback(name, theme); }, 1000);
+                    // Setup input
+                    const zone = document.getElementById('answer-zone');
+                    if(data.settings.mode === 'multi') {
+                        setupMultiChoice(currentAnime.titleEnglish || currentAnime.titleRomaji, data.settings.multiCount);
+                    } else {
+                        zone.innerHTML = `<div class="search-container"><input type="text" id="answer-input" placeholder="Tapez le titre..." oninput="fetchSuggestions(this.value)" autofocus autocomplete="off"><div id="suggestions-box" class="hidden"></div></div>`;
+                    }
+                }, 1000);
             };
         }
 
-        function startPlayback(name, theme) {
-            const player = document.getElementById('main-player');
-            player.play();
-            
+        function updateInfoBox(theme) {
             document.getElementById('res-anime').innerText = currentAnime.titleRomaji || "N/A";
             document.getElementById('res-anime-en').innerText = currentAnime.titleEnglish || "N/A";
             document.getElementById('res-format').innerText = currentAnime.format || "Inconnu";
@@ -367,22 +498,13 @@
             document.getElementById('res-year').innerText = `${currentAnime.season || ''} ${currentAnime.year || ''}`;
             document.getElementById('res-score').innerText = currentAnime.score ? `${currentAnime.score}/100` : "N/A";
             document.getElementById('res-genres').innerText = currentAnime.genres;
-                
-            if(document.getElementById('game-mode-select').value === 'multi') {
-                const correctTitle = currentAnime.titleEnglish || currentAnime.titleRomaji;
-                setupMultiChoice(correctTitle);
-            }
-            startTimer();
         }
 
-        function setupMultiChoice(correctTitle) {
-            const count = parseInt(document.getElementById('multi-choice-count').value);
+        function setupMultiChoice(correctTitle, count) {
             const zone = document.getElementById('answer-zone');
-            const checkedFormats = Array.from(document.querySelectorAll('#anime-types input:checked')).map(i => i.value);
-            const isTvOnly = checkedFormats.length === 1 && checkedFormats[0] === 'TV';
             let choices = [correctTitle];
             let listCopy = [...userAnimeList].filter(a => (a.titleEnglish !== correctTitle && a.titleRomaji !== correctTitle));
-            if (isTvOnly) { listCopy = listCopy.filter(a => a.format === 'TV'); }
+            
             for(let i=0; i < count-1; i++) {
                 if(listCopy.length === 0) break;
                 const idx = Math.floor(Math.random() * listCopy.length);
@@ -433,8 +555,8 @@
             document.getElementById('suggestions-box').classList.add('hidden');
         }
 
-        function startTimer() {
-            let time = parseInt(document.getElementById('duration').value);
+        function startTimer(duration) {
+            let time = duration;
             const display = document.getElementById('timer-display');
             display.innerText = time;
             timerInterval = setInterval(() => {
@@ -442,7 +564,10 @@
                 display.innerText = Math.max(0, time);
                 if(time < 0) { 
                     clearInterval(timerInterval); 
-                    reveal(); 
+                    if(isHost) {
+                        broadcast({type: 'REVEAL'});
+                        reveal();
+                    }
                 }
             }, 1000);
         }
@@ -450,10 +575,11 @@
         function reveal() {
             clearInterval(timerInterval);
             document.getElementById('video-overlay').classList.add('hidden');
-            document.getElementById('video-overlay').classList.remove('transparent'); // On reset pour le prochain round
+            document.getElementById('video-overlay').classList.remove('transparent');
             document.getElementById('info-placeholder').classList.add('hidden');
             document.getElementById('info-details').classList.remove('hidden');
-            document.getElementById('host-controls').classList.remove('hidden');
+            
+            if(isHost) document.getElementById('host-controls').classList.remove('hidden');
             
             document.getElementById('main-player').classList.remove('blur-video');
             document.getElementById('main-player').playbackRate = 1;
@@ -466,17 +592,18 @@
             buttons.forEach(btn => {
                 btn.disabled = true;
                 btn.style.cursor = "default";
-                btn.style.opacity = "0.8";    
             });
         }
 
         function resetToLobby() {
             const player = document.getElementById('main-player');
-            player.pause(); 
-            player.src = "";
+            player.pause(); player.src = "";
             document.getElementById('game-content').classList.add('hidden');
             document.getElementById('lobby-content').classList.remove('hidden');
             clearSongInfo();
+            // On retire le ?room= de l'URL pour pouvoir relancer proprement si besoin
+            window.history.pushState({}, '', window.location.pathname);
+            location.reload(); 
         }
 
         function clearSongInfo() {
@@ -494,10 +621,6 @@
             document.getElementById('video-overlay').innerText = "Chargement...";
             clearSongInfo();
             document.getElementById('host-controls').classList.add('hidden');
-            const zone = document.getElementById('answer-zone');
-            if(document.getElementById('game-mode-select').value === 'typing') {
-                zone.innerHTML = `<div class="search-container"><input type="text" id="answer-input" placeholder="Tapez le titre..." oninput="fetchSuggestions(this.value)" autofocus autocomplete="off"><div id="suggestions-box" class="hidden"></div></div>`;
-            } else { zone.innerHTML = ""; }
         }
     </script>
 </body>
