@@ -225,8 +225,9 @@
                     <div id="timer-display">20</div>
                 </div>
                 <div id="video-area">
+                    <video id="main-player" playsinline></video>
                     <div id="video-overlay">Buffering...</div>
-                    </div>
+                </div>
                 <div id="answer-zone"></div>
 
                 <div id="validation-zone" class="hidden">
@@ -298,6 +299,11 @@
         let selectedGenres = new Set();
         let selectedTags = new Set();
 
+        // Système de Pipeline
+        let nextRoundData = null; // Stocke les infos du prochain round (URL, Anime, etc)
+        let currentBlobUrl = null; // URL blob du round actuel
+        let nextBlobUrl = null;    // URL blob en cours de téléchargement
+
 		window.onload = function() {
 			initFilterLists();
 			const savedList = localStorage.getItem('aq_list');
@@ -312,23 +318,22 @@
 			const roomId = urlParams.get('room');
 			if (roomId) document.getElementById('btn-lobby').innerText = "REJOINDRE LA SALLE";
 			window.onclick = () => { document.querySelectorAll('.dropdown-list').forEach(d => { d.style.display = 'none'; }); };
+
+            // Gestion volume
+            const vol = document.getElementById('volume-slider');
+            vol.oninput = () => { document.getElementById('main-player').volume = vol.value; };
 		};
 
-        function stopVideo() {
-            const container = document.getElementById('video-area');
-            let player = document.getElementById('main-player');
-            if(player) {
-                player.pause();
-                player.src = "";
-                player.load();
-                player.remove();
-            }
-            const newPlayer = document.createElement('video');
-            newPlayer.id = 'main-player';
-            newPlayer.playsInline = true;
-            newPlayer.volume = document.getElementById('volume-slider').value;
-            container.appendChild(newPlayer);
-        }
+		function stopVideo() {
+			let player = document.getElementById('main-player');
+			if (player) {
+				player.pause();
+				player.removeAttribute('src');
+				player.load(); 
+				player.playbackRate = 1;
+			}
+            // On ne revoke pas ici le blob car on peut en avoir besoin pour le reveal
+		}
 
 		async function initFilterLists() {
 			const query = `query { GenreCollection MediaTagCollection { name } }`;
@@ -349,7 +354,7 @@
 		}
 
         function toggleDropdown(id) {
-            if(!isHost) return; // Invités ne peuvent pas ouvrir
+            if(!isHost) return;
             event.stopPropagation();
             const el = document.getElementById(id);
             const isVisible = el.style.display === 'block';
@@ -436,7 +441,6 @@
             if(roomId) joinRoom(roomId, username); else createRoom(username);
         }
 
-        // --- GESTION SYNC PARAMETRES ---
         function hostSyncSettings() {
             if(!isHost) return;
             const settings = {
@@ -508,7 +512,7 @@
                         allPlayersAnimes[conn.peer] = data.userList || [];
                         updatePlayerList();
                         broadcast({ type: 'PLAYER_LIST', players: players });
-                        hostSyncSettings(); // Envoyer les réglages au nouveau
+                        hostSyncSettings();
                     }
                     if (data.type === 'CHAT') {
                         displayChatMessage(data.name, data.message);
@@ -552,6 +556,7 @@
                 connToHost.on('data', (data) => {
                     if(data.type === 'PLAYER_LIST') { players = data.players; updatePlayerList(); }
                     if(data.type === 'SYNC_SETTINGS') applyGuestSettings(data.settings);
+                    if(data.type === 'PREPARE_NEXT') receivePrepareNext(data);
                     if(data.type === 'START_ROUND') receiveStartRound(data);
                     if(data.type === 'ALL_READY') startActualRound();
                     if(data.type === 'REVEAL') receiveReveal(data);
@@ -623,25 +628,22 @@
 			resetToLobby();
 		}
 
-		function launchGame() {
-			isGameActive = true;
-			totalRounds = parseInt(document.getElementById('nb-songs').value);
-			currentRound = 0;
-			nextRound();
-		}
-
-		async function nextRound() {
-			if (!isGameActive) return; 
-			if (currentRound >= totalRounds) { hostResetLobby(); return; }
-			currentRound++; readyPlayers.clear(); players.forEach(p => p.lastAns = ""); 
-
+        /**
+         * NOUVEAU SYSTEME : Récupère un seul round
+         */
+        async function fetchSingleRoundData(roundIdx) {
             const sourceMode = document.getElementById('pool-player-select').value;
+            const allowedFormats = Array.from(document.querySelectorAll('#anime-types input:checked')).map(i => i.value);
+            const yearMin = parseInt(document.getElementById('filter-year-min').value) || 0;
+            const yearMax = parseInt(document.getElementById('filter-year-max').value) || 9999;
+            const allowedSongTypes = Array.from(document.querySelectorAll('#song-types input:checked')).map(i => i.value);
+            
             let pool = [];
             if (sourceMode === 'all_players') {
                 const distMode = document.getElementById('distribution-mode').value;
                 if (distMode === 'equal') {
                     const activePlayerIds = Object.keys(allPlayersAnimes).filter(id => allPlayersAnimes[id].length > 0);
-                    const randomPlayerId = activePlayerIds[currentRound % activePlayerIds.length];
+                    const randomPlayerId = activePlayerIds[roundIdx % activePlayerIds.length];
                     pool = allPlayersAnimes[randomPlayerId];
                 } else {
                     pool = Object.values(allPlayersAnimes).flat();
@@ -649,82 +651,196 @@
             } else {
                 pool = allPlayersAnimes[sourceMode] || [];
             }
-			
-			const allowedFormats = Array.from(document.querySelectorAll('#anime-types input:checked')).map(i => i.value);
-			const yearMin = parseInt(document.getElementById('filter-year-min').value) || 0;
-            const yearMax = parseInt(document.getElementById('filter-year-max').value) || 9999;
-            
-			let filtered = pool.filter(a => {
+
+            let filtered = pool.filter(a => {
                 const formatMatch = allowedFormats.length === 0 || allowedFormats.includes(a.format);
                 const yearMatch = (a.year || 0) >= yearMin && (a.year || 0) <= yearMax;
                 const genreMatch = selectedGenres.size === 0 || Array.from(selectedGenres).every(g => a.genres && a.genres.includes(g));
                 const tagMatch = selectedTags.size === 0 || Array.from(selectedTags).every(t => a.tags && a.tags.includes(t));
                 return formatMatch && yearMatch && genreMatch && tagMatch;
             });
-			
-			if(filtered.length === 0) {
-                alert("Aucun animé ne correspond à vos filtres !");
-                hostResetLobby(); return;
+
+            if (filtered.length === 0) return null;
+
+            // Tentatives pour trouver une vidéo valide
+            for(let i=0; i<15; i++) {
+                let pick = filtered[Math.floor(Math.random() * filtered.length)];
+                try {
+                    const res = await fetch(`https://api.animethemes.moe/anime?filter[has]=resources&filter[site]=MyAnimeList&filter[external_id]=${pick.malId}&include=animethemes.animethemeentries.videos,animethemes.song.artists`);
+                    const json = await res.json();
+                    if (!json.anime || json.anime.length === 0) continue;
+
+                    let themes = json.anime[0].animethemes;
+                    if (allowedSongTypes.length > 0) themes = themes.filter(t => allowedSongTypes.includes(t.type));
+                    if (themes.length === 0) continue;
+
+                    const theme = themes[Math.floor(Math.random() * themes.length)];
+                    const videoUrl = theme.animethemeentries[0].videos[0].link;
+
+                    let choices = [];
+                    if (document.getElementById('game-mode-select').value === 'multi') {
+                        const count = parseInt(document.getElementById('multi-choice-count').value);
+                        const correctTitle = pick.titleEnglish || pick.titleRomaji;
+                        choices = [correctTitle];
+                        let listCopy = [...pool].filter(a => (a.titleEnglish !== correctTitle && a.titleRomaji !== correctTitle));
+                        for (let j = 0; j < count - 1; j++) {
+                            if (listCopy.length === 0) break;
+                            const idx = Math.floor(Math.random() * listCopy.length);
+                            choices.push(listCopy[idx].titleEnglish || listCopy[idx].titleRomaji);
+                            listCopy.splice(idx, 1);
+                        }
+                        choices.sort(() => Math.random() - 0.5);
+                    }
+
+                    return { videoUrl, currentAnime: pick, theme, choices };
+                } catch (e) { console.error(e); }
             }
-
-			currentAnime = filtered[Math.floor(Math.random() * filtered.length)];
-			
-			try {
-				const res = await fetch(`https://api.animethemes.moe/anime?filter[has]=resources&filter[site]=MyAnimeList&filter[external_id]=${currentAnime.malId}&include=animethemes.animethemeentries.videos,animethemes.song.artists`);
-				const json = await res.json();
-				if (!isGameActive) return;
-				const allowedSongTypes = Array.from(document.querySelectorAll('#song-types input:checked')).map(i => i.value);
-				let themes = json.anime[0].animethemes;
-				if(allowedSongTypes.length > 0) themes = themes.filter(t => allowedSongTypes.includes(t.type));
-				if(themes.length === 0) { nextRound(); return; }
-				const theme = themes[Math.floor(Math.random() * themes.length)];
-				const videoUrl = theme.animethemeentries[0].videos[0].link;
-
-				currentChoices = [];
-				const mode = document.getElementById('game-mode-select').value;
-				if(mode === 'multi') {
-					const count = parseInt(document.getElementById('multi-choice-count').value);
-					const correctTitle = currentAnime.titleEnglish || currentAnime.titleRomaji;
-					currentChoices = [correctTitle];
-					let listCopy = [...pool].filter(a => (a.titleEnglish !== correctTitle && a.titleRomaji !== correctTitle));
-					for(let i=0; i < count-1; i++) {
-						if(listCopy.length === 0) break;
-						const idx = Math.floor(Math.random() * listCopy.length);
-						currentChoices.push(listCopy[idx].titleEnglish || listCopy[idx].titleRomaji);
-						listCopy.splice(idx, 1);
-					}
-					currentChoices.sort(() => Math.random() - 0.5);
-				}
-
-				const roundData = { 
-					type: 'START_ROUND', videoUrl, currentAnime, theme, round: currentRound, total: totalRounds, choices: currentChoices, 
-					settings: { 
-						videoStyle: document.getElementById('setting-video-style').value, sample: document.getElementById('setting-sample').value, 
-						speed: document.getElementById('setting-speed').value, duration: document.getElementById('duration').value, mode: mode 
-					} 
-				};
-				broadcast(roundData); receiveStartRound(roundData);
-			} catch (e) { console.error("Erreur nextRound:", e); if (isGameActive) nextRound(); }
-		}
-
-        function receiveStartRound(data) {
-            currentRound = data.round; totalRounds = data.total; currentAnime = data.currentAnime;
-            currentRoundSettings = data.settings; currentChoices = data.choices;
-            document.getElementById('lobby-content').classList.add('hidden');
-            document.getElementById('game-content').classList.remove('hidden');
-            document.getElementById('round-info').innerText = `Round ${currentRound} / ${totalRounds}`;
-            document.getElementById('validation-zone').classList.add('hidden');
-            resetUI();
-            const player = document.getElementById('main-player');
-            player.src = data.videoUrl; player.load();
-            player.oncanplaythrough = () => {
-                player.oncanplaythrough = null;
-                document.getElementById('video-overlay').innerText = "Prêt !";
-                updateInfoBox(data.theme);
-                if(!isHost) connToHost.send({ type: 'READY_ROUND' }); else checkAllPlayersReady();
-            };
+            return null;
         }
 
+        /**
+         * TELECHARGEMENT COMPLET EN BLOB
+         */
+        async function downloadVideoToBlob(url) {
+            try {
+                const response = await fetch(url);
+                if (!response.ok) throw new Error("Erreur HTTP: " + response.status);
+                const blob = await response.blob();
+                return URL.createObjectURL(blob);
+            } catch (e) {
+                console.error("Erreur lors du téléchargement de la vidéo:", e);
+                return null;
+            }
+        }
+
+		async function launchGame() {
+            if(!isHost) return;
+            const btn = document.getElementById('btn-start-game');
+            btn.disabled = true;
+            btn.innerText = "Recherche Round 1...";
+
+            const firstRound = await fetchSingleRoundData(0);
+            if(!firstRound) {
+                alert("Impossible de trouver un animé avec ces filtres.");
+                btn.disabled = false; btn.innerText = "LANCER !";
+                return;
+            }
+
+            isGameActive = true;
+			totalRounds = parseInt(document.getElementById('nb-songs').value);
+			currentRound = 1;
+
+            nextRoundData = {
+                ...firstRound,
+                round: currentRound,
+                total: totalRounds,
+                settings: {
+                    videoStyle: document.getElementById('setting-video-style').value,
+                    sample: document.getElementById('setting-sample').value,
+                    speed: document.getElementById('setting-speed').value,
+                    duration: document.getElementById('duration').value,
+                    mode: document.getElementById('game-mode-select').value
+                }
+            };
+
+            // On envoie d'abord les infos pour que tout le monde télécharge
+            broadcast({ type: 'PREPARE_NEXT', data: nextRoundData });
+            await receivePrepareNext({ data: nextRoundData });
+
+            btn.disabled = false; btn.innerText = "LANCER !";
+            startCurrentPreparedRound();
+		}
+
+        /**
+         * Etape 1 : Tout le monde reçoit l'ordre de télécharger la vidéo
+         */
+        async function receivePrepareNext(msg) {
+            nextRoundData = msg.data;
+            document.getElementById('video-overlay').innerText = `Téléchargement Round ${nextRoundData.round}...`;
+            
+            // Si on avait déjà un blob d'attente, on le nettoie (cas rare)
+            if(nextBlobUrl) URL.revokeObjectURL(nextBlobUrl);
+            
+            nextBlobUrl = await downloadVideoToBlob(nextRoundData.videoUrl);
+            
+            if(!nextBlobUrl) {
+                document.getElementById('video-overlay').innerText = "Erreur de téléchargement...";
+            } else {
+                document.getElementById('video-overlay').innerText = "Vidéo prête !";
+            }
+
+            // Si c'est un client, il prévient l'hôte qu'il est prêt
+            if(!isHost) {
+                connToHost.send({ type: 'READY_ROUND' });
+            } else {
+                readyPlayers.add(peer.id);
+                checkAllPlayersReady();
+            }
+        }
+
+        /**
+         * Etape 2 : L'hôte lance le round quand tout le monde a fini de télécharger
+         */
+        function startCurrentPreparedRound() {
+            if(!nextBlobUrl) return alert("Vidéo non chargée");
+
+            // On bascule le "Next" vers le "Current"
+            if(currentBlobUrl) URL.revokeObjectURL(currentBlobUrl);
+            currentBlobUrl = nextBlobUrl;
+            nextBlobUrl = null;
+
+            const dataToStart = { ...nextRoundData, blobUrl: currentBlobUrl };
+            broadcast({ type: 'START_ROUND', ...dataToStart });
+            receiveStartRound(dataToStart);
+
+            // Pendant que ce round commence, l'hôte prépare DEJA le suivant en tâche de fond
+            if(isHost && currentRound < totalRounds) {
+                prepareNextRoundInBackground();
+            }
+        }
+
+        async function prepareNextRoundInBackground() {
+            const nextIdx = currentRound; // currentRound a déjà été incrémenté ou va l'être
+            const data = await fetchSingleRoundData(nextIdx);
+            if(data) {
+                const nextData = {
+                    ...data,
+                    round: currentRound + 1,
+                    total: totalRounds,
+                    settings: nextRoundData.settings
+                };
+                // On diffuse l'ordre de téléchargement discret pendant le round actuel
+                broadcast({ type: 'PREPARE_NEXT', data: nextData });
+                receivePrepareNext({ data: nextData });
+            }
+        }
+
+		function receiveStartRound(data) {
+			currentRound = data.round; 
+			totalRounds = data.total; 
+			currentAnime = data.currentAnime;
+			currentRoundSettings = data.settings; 
+			currentChoices = data.choices;
+
+			document.getElementById('lobby-content').classList.add('hidden');
+			document.getElementById('game-content').classList.remove('hidden');
+			document.getElementById('round-info').innerText = `Round ${currentRound} / ${totalRounds}`;
+			document.getElementById('validation-zone').classList.add('hidden');
+			
+			resetUI(); 
+
+			const player = document.getElementById('main-player');
+			player.src = data.blobUrl; // On utilise le blob téléchargé à 100%
+            player.load();
+
+			player.oncanplaythrough = () => {
+				player.oncanplaythrough = null;
+				document.getElementById('video-overlay').innerText = "Prêt !";
+				updateInfoBox(data.theme);
+                // Le round démarre immédiatement car le timer d'attente est géré par l'hôte via ALL_READY
+			};
+		}
+		
         function startActualRound() {
             const player = document.getElementById('main-player');
             const overlay = document.getElementById('video-overlay');
@@ -733,9 +849,15 @@
             if (style === 'clear') { player.classList.remove('blur-video'); overlay.classList.add('transparent'); overlay.style.display = "none"; }
             else if (style === 'blur') { player.classList.add('blur-video'); overlay.classList.add('transparent'); overlay.style.display = "flex"; }
             else { player.classList.remove('blur-video'); overlay.classList.remove('transparent'); overlay.style.display = "flex"; }
-            player.currentTime = (currentRoundSettings.sample === 'random') ? Math.floor(Math.random() * 60) : 0;
+            
+            // Position de départ
+            player.currentTime = (currentRoundSettings.sample === 'random') ? Math.floor(Math.random() * 40) : 0;
             player.playbackRate = parseFloat(currentRoundSettings.speed);
-            player.play(); startTimer(parseInt(currentRoundSettings.duration));
+            player.volume = document.getElementById('volume-slider').value;
+            
+            player.play(); 
+            startTimer(parseInt(currentRoundSettings.duration));
+
             const zone = document.getElementById('answer-zone');
             if(currentRoundSettings.mode === 'multi') {
                 zone.innerHTML = `<div class="multi-grid">` + currentChoices.map(c => `<button class="btn-choice" onclick="selectChoice(this)">${c}</button>`).join('') + `</div>`;
@@ -816,16 +938,49 @@
         }
 
         function processNextValidationStep() {
-            if(currentValidatingIdx >= validationQueue.length) { setTimeout(() => nextRound(), 500); return; }
+            if(currentValidatingIdx >= validationQueue.length) { 
+                // On attend que tout le monde soit prêt pour le round suivant
+                // Mais l'hôte doit attendre que le téléchargement "Next" soit fini
+                checkBeforeNextRound();
+                return; 
+            }
             const p = validationQueue[currentValidatingIdx];
             const data = { type: 'STEP_REVEAL', pseudo: p.name, answer: p.lastAns || "(Aucune réponse)" };
             broadcast(data); updateStepRevealUI(p.name, p.lastAns || "(Aucune réponse)");
+        }
+
+        function checkBeforeNextRound() {
+            if(currentRound >= totalRounds) {
+                setTimeout(() => hostResetLobby(), 2000);
+            } else {
+                // On vérifie si tout le monde a fini de télécharger la vidéo suivante
+                readyPlayers.clear();
+                if(isHost) {
+                    readyPlayers.add(peer.id);
+                    // Si l'hôte n'a pas fini son propre download en tâche de fond, il attend
+                    const check = setInterval(() => {
+                        if(nextBlobUrl) {
+                            clearInterval(check);
+                            checkAllPlayersReadyForNext();
+                        }
+                    }, 500);
+                }
+            }
+        }
+
+        function checkAllPlayersReadyForNext() {
+            if (readyPlayers.size >= connections.length + 1) {
+                startCurrentPreparedRound();
+            } else {
+                document.getElementById('reveal-answer').innerText = "Attente des joueurs (téléchargement)...";
+            }
         }
 
 		function updateStepRevealUI(pseudo, answer) {
 			document.getElementById('reveal-pseudo').innerText = pseudo;
 			document.getElementById('reveal-answer').innerText = answer;
 			const player = players.find(p => p.name === pseudo);
+            if(!player) return;
 			const playerList = allPlayersAnimes[player.id] || [];
 			const animeInList = playerList.find(a => a.malId === currentAnime.malId);
 			let statusIndicator = "";
@@ -855,6 +1010,9 @@
 			document.getElementById('lobby-content').classList.remove('hidden');
 			document.getElementById('host-validation-btns').classList.add('hidden');
 			clearSongInfo(); currentRound = 0;
+            if(currentBlobUrl) URL.revokeObjectURL(currentBlobUrl);
+            if(nextBlobUrl) URL.revokeObjectURL(nextBlobUrl);
+            currentBlobUrl = null; nextBlobUrl = null;
 		}
 
         function clearSongInfo() {
@@ -875,9 +1033,11 @@
         function leaveRoom() {
             if (!confirm("Voulez-vous vraiment quitter la salle ?")) return;
             stopVideo();
+            if(currentBlobUrl) URL.revokeObjectURL(currentBlobUrl);
+            if(nextBlobUrl) URL.revokeObjectURL(nextBlobUrl);
             if (peer) peer.destroy();
             peer = null; isHost = false; connections = []; connToHost = null; players = []; readyPlayers.clear(); currentRound = 0;
-            allPlayersAnimes = {};
+            allPlayersAnimes = {}; 
             const url = new URL(window.location.href); url.searchParams.delete('room');
             window.history.pushState({}, '', url.pathname);
             document.getElementById('screen-main').classList.add('hidden');
